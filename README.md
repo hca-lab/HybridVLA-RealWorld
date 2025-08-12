@@ -65,7 +65,7 @@ Please change the IP address based on your setting and adjust the scale paramete
 # run run_vla.py file
 python scripts/run_vla.py 
 ```
-Please change the IP address based on your setting and the checkpoints path.
+Please change the IP address based on your setting and the checkpoints path. We use two RealSense cameras for wrist and front views. Please ensure that the image inputs to the VLA model are correctly assigned.
 
 ```bash
 # To quit the control, press 'q'.
