@@ -1,0 +1,201 @@
+import pyrealsense2 as rs
+import cv2
+import numpy as np
+from PIL import Image
+
+import sys
+sys.path.append("/home/yi/HybridVLA-RealWorld/")
+
+from models import load_vla
+import torch
+import numpy as np
+import time
+
+import socket
+import struct
+
+# =========================
+# Socket Communication Setup (optional)
+# =========================
+# ---- Actions sender (PC1 -> PC2) ----
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+server_address = ('10.1.38.22', 9090)   # PC2 receiver for actions
+ACTION_FMT = "<7d"
+
+# ---- State receiver (PC2 -> PC1) ----
+STATE_FMT = "<7d"                       # x,y,z,roll,pitch,yaw,gripper (float64)
+STATE_LISTEN_IP = "0.0.0.0"             # listen on all interfaces
+STATE_LISTEN_PORT = 9091                # <-- use a different port than 9090
+state_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+state_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+state_sock.bind((STATE_LISTEN_IP, STATE_LISTEN_PORT))
+state_sock.settimeout(0.0)              # non-blocking
+last_robot_state = np.zeros(7, dtype=np.float64)
+
+
+
+
+def crop_and_resize_cv(image_pil: Image.Image, crop_scale: float = 0.9, out_hw=(224, 224)) -> Image.Image:
+    """Center-crop by area ratio then resize, using NumPy/OpenCV only."""
+    img = np.array(image_pil)  # RGB uint8, (H,W,C)
+    if img.ndim != 3 or img.shape[2] != 3:
+        raise ValueError("Expected RGB image (H,W,3)")
+    H, W = img.shape[:2]
+
+    s = float(crop_scale) ** 0.5
+    crop_h = max(1, int(round(H * s)))
+    crop_w = max(1, int(round(W * s)))
+
+    y0 = max((H - crop_h) // 2, 0); y1 = y0 + crop_h
+    x0 = max((W - crop_w) // 2, 0); x1 = x0 + crop_w
+    img_c = img[y0:y1, x0:x1]
+
+    out_w, out_h = out_hw[1], out_hw[0]  # cv2 takes (W,H)
+    img_r = cv2.resize(img_c, (out_w, out_h), interpolation=cv2.INTER_AREA)
+    return Image.fromarray(img_r, mode="RGB")
+
+def preprocess_image(image_pil: Image.Image, crop_scale: float = 0.9, out_size=(224, 224)) -> Image.Image:
+    """Center-crop by area 'crop_scale' and resize to out_size using OpenCV."""
+    img = np.array(image_pil)  # RGB
+    H, W = img.shape[:2]
+    s = float(crop_scale) ** 0.5
+    crop_h, crop_w = int(round(H * s)), int(round(W * s))
+    y0 = max((H - crop_h) // 2, 0)
+    x0 = max((W - crop_w) // 2, 0)
+    y1 = y0 + crop_h
+    x1 = x0 + crop_w
+    img_c = img[y0:y1, x0:x1]
+    img_r = cv2.resize(img_c, out_size, interpolation=cv2.INTER_AREA)
+    return Image.fromarray(img_r, mode="RGB")
+
+
+
+def poll_robot_state_nonblocking():
+    global last_robot_state
+    while True:
+        try:
+            data, _ = state_sock.recvfrom(1024)
+        except BlockingIOError:
+            break
+        except Exception:
+            break
+        if len(data) == struct.calcsize(STATE_FMT):
+            last_robot_state = np.array(struct.unpack(STATE_FMT, data), dtype=np.float64)
+    return last_robot_state
+
+
+
+
+# ====== RealSense capture setup ======
+def start_pipeline(serial: str):
+    """Start a RealSense pipeline for a given device serial number."""
+    pipeline = rs.pipeline()
+    cfg = rs.config()
+    cfg.enable_device(serial)
+    cfg.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+    pipeline.start(cfg)
+    return pipeline
+
+# Find first two connected RealSense devices
+ctx = rs.context()
+devices = list(ctx.query_devices())
+if len(devices) < 2:
+    raise RuntimeError(f"At least two RealSense D455 cameras are required, found {len(devices)}.")
+
+serials = [d.get_info(rs.camera_info.serial_number) for d in devices[:2]]
+print(f"[RealSense] Using devices: {serials[0]} (Camera 1), {serials[1]} (Camera 2)")
+print("Press 'q' in any OpenCV window to quit.")
+
+pipe1 = start_pipeline(serials[0])
+pipe2 = start_pipeline(serials[1])
+
+
+### load model and perform inference
+
+model = load_vla(
+        '/home/yi/ModelCheckPoints/VLA-Model/pretrained_RLB_hybridvla/checkpoints/latest-checkpoint.pt',
+        load_for_training=False,
+        future_action_window_size=0,
+        use_diff=True, # choose weither to use diff
+        action_dim=7,
+        )
+
+model.vlm = model.vlm.to(torch.bfloat16)
+
+model.to('cuda:0').eval()
+
+send_interval = 0.2  # seconds between sends (5 Hz)
+last_send_time = 0.0
+
+i = 0
+
+try:
+    while True:
+        frames1 = pipe1.wait_for_frames()
+        frames2 = pipe2.wait_for_frames()
+        color_frame1 = frames1.get_color_frame()
+        color_frame2 = frames2.get_color_frame()
+        if not color_frame1 or not color_frame2:
+            continue
+
+        img1 = np.asanyarray(color_frame1.get_data())  # BGR
+        img2 = np.asanyarray(color_frame2.get_data())  # BGR
+        pil1 = Image.fromarray(cv2.cvtColor(img1, cv2.COLOR_BGR2RGB))
+        pil2 = Image.fromarray(cv2.cvtColor(img2, cv2.COLOR_BGR2RGB))
+        wrist_image = preprocess_image(pil1)
+        front_image = preprocess_image(pil2)
+        disp1 = cv2.cvtColor(np.array(wrist_image), cv2.COLOR_RGB2BGR)
+        disp2 = cv2.cvtColor(np.array(front_image), cv2.COLOR_RGB2BGR)
+
+        # Resize for larger display (e.g., 3x larger)
+        display_scale = 3
+        disp1_large = cv2.resize(disp1, (224 * display_scale, 224 * display_scale), interpolation=cv2.INTER_NEAREST)
+        disp2_large = cv2.resize(disp2, (224 * display_scale, 224 * display_scale), interpolation=cv2.INTER_NEAREST)
+
+        cv2.imshow("Camera 1 Processed", disp1_large)
+        cv2.imshow("Camera 2 Processed", disp2_large)
+
+        # Quit on 'q'
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            print("Quitting...")
+            break
+        
+        # Only send and run inference every `send_interval` seconds
+        now = time.time()
+        if now - last_send_time >= send_interval:
+                # 1) Get latest robot state from PC2
+                cur_robot_state = poll_robot_state_nonblocking().astype(np.float32)  # shape (7,)
+
+                print(f"[PC1] Current robot state: {cur_robot_state}")
+
+                example_prompt = "pick up the orange to the plate"  # Example instruction
+
+                # 2) Run inference USING the robot state
+                actions_ar, _ = model.predict_action(
+                        front_image=front_image,
+                        wrist_image=wrist_image,
+                        instruction=example_prompt,
+                        unnorm_key='rlbench',
+                        cfg_scale=0.0,
+                        use_ddim=True,
+                        num_ddim_steps=4,
+                        action_dim=7,
+                        cur_robot_state=cur_robot_state,    # <<< important
+                        predict_mode='ar'
+                )
+
+                # print('action_prediction:', actions_ar)
+
+                # 3) Send to PC2 (same format as PC2 expects)
+                message_UDP = struct.pack(ACTION_FMT, *actions_ar)
+                sock.sendto(message_UDP, server_address)
+                print(f"[PC1] Sent action to PC2: {actions_ar}")
+
+                last_send_time = now
+
+
+
+finally:
+    pipe1.stop()
+    pipe2.stop()
+    cv2.destroyAllWindows()
