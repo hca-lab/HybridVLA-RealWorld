@@ -37,8 +37,10 @@ Please move the folder 'FrankyControl' to the Franka controller site.
 
 # Checkpoints Download
 Please download the HybridVLA release checkpoints:
-- [Robotic Large-Scale Pretrained Checkpoint](https://pan.baidu.com/s/134S9y8UwoNlyw3yUKozbRw?pwd=1spu)
-- [Simulation-Finetuned Checkpoint](https://pan.baidu.com/s/1f5zpPKoAJDRIHFIH602Bqg?pwd=3ca1)
+<!-- - [Robotic Large-Scale Pretrained Checkpoint](https://pan.baidu.com/s/134S9y8UwoNlyw3yUKozbRw?pwd=1spu)
+- [Simulation-Finetuned Checkpoint](https://pan.baidu.com/s/1f5zpPKoAJDRIHFIH602Bqg?pwd=3ca1) -->
+
+- [Pretrained Checkpoint](https://drive.google.com/drive/folders/1dZOKHjmKRiXq5IuYBqCK6_Eyre5rrx3G?usp=drive_link)
 
 
 # Real-World Experiment
