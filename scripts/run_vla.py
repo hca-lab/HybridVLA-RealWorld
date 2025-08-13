@@ -149,8 +149,8 @@ try:
 
         # Resize for larger display (e.g., 3x larger)
         display_scale = 3
-        disp1_large = cv2.resize(disp1, (224 * display_scale, 224 * display_scale), interpolation=cv2.INTER_NEAREST)
-        disp2_large = cv2.resize(disp2, (224 * display_scale, 224 * display_scale), interpolation=cv2.INTER_NEAREST)
+        disp1_large = cv2.resize(img1, (224 * display_scale, 224 * display_scale), interpolation=cv2.INTER_NEAREST)
+        disp2_large = cv2.resize(img2, (224 * display_scale, 224 * display_scale), interpolation=cv2.INTER_NEAREST)
 
         cv2.imshow("Camera 1 Processed", disp1_large)
         cv2.imshow("Camera 2 Processed", disp2_large)
