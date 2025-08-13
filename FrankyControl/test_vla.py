@@ -64,15 +64,21 @@ def read_ee_pose_rpy(robot: Robot) -> Tuple[float, float, float, float, float, f
     r, p, yaw = quat_to_rpy(w, xq, yq, zq)
     return x, y, z, r, p, yaw
 
+
 def read_gripper_open(gripper: franky.Gripper) -> float:
-    # If you have an API for width/open state, use it here.
-    # Placeholder: 1.0=open, 0.0=closed
+    """
+    Pi0 convention: 0.0 = fully open, 1.0 = fully closed.
+    """
     try:
-        # width = gripper.width  # if available
-        # return 1.0 if width > SOME_THRESHOLD else 0.0
-        return 1.0
-    except Exception:
-        return 1.0
+        width = float(gripper.width)   # meters
+        MAX_OPEN = 0.08
+        MIN_OPEN = 0.0
+        width = max(MIN_OPEN, min(MAX_OPEN, width))
+        closed_ratio = 1.0 - (width - MIN_OPEN) / (MAX_OPEN - MIN_OPEN)
+        return closed_ratio
+    except Exception as e:
+        print("[gripper] read error:", e)
+        return 0.0  
 
 # =========================
 # State publisher (NEW)
@@ -130,6 +136,12 @@ def main():
     # Rate control for state publisher
     last_state_send = 0.0
 
+
+    # --- add: keep state across loop ---
+    last_gripper_mode = None   # "open" or "close"
+    last_grip_time = 0.0
+    GRIPPER_COOLDOWN = 0.5
+
     try:
         while True:
             # ---- 1) Receive latest action (non-blocking-ish) ----
@@ -160,16 +172,29 @@ def main():
                     except Exception as e:
                         print("[move] error:", e)
 
-                    # ---- 2) Gripper control based on act[0] ----
+
+                    # ---- 2) Gripper control (only send if mode changes) ----
                     try:
-                        if act[6] > 0.5:  # You can choose the index/threshold here
-                            success = gripper.move(0.05, speed)
-                            # Grasp an object of unknown width
-                            success &= gripper.grasp(0.0, speed, force, epsilon_outer=1.0)
-                            print("[gripper] Close command sent")
+                        # Pi0: 0=open, 1=close 
+                        if act[6] <= 0.0:
+                            current_mode = "open"
+                        elif act[6] >= 1.0:
+                            current_mode = "close"
                         else:
-                            gripper.open(speed)
-                            print("[gripper] Open command sent")
+                            current_mode = last_gripper_mode  # 
+
+                        now = time.time()
+                        if current_mode != last_gripper_mode and current_mode is not None and (now - last_grip_time) >= GRIPPER_COOLDOWN:
+                            if current_mode == "close":
+                                success = gripper.move(0.05, speed)
+                                success &= gripper.grasp(0.0, speed, force, epsilon_outer=1.0)
+                                print("[gripper] Close command sent")
+                            else:  # "open"
+                                gripper.open(speed)
+                                print("[gripper] Open command sent")
+
+                            last_gripper_mode = current_mode
+                            last_grip_time = now
                     except Exception as e:
                         print("[gripper] error:", e)
 
